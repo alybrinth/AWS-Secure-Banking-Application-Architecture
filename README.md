@@ -4,6 +4,8 @@
 A **cloud-native banking application** designed for around **1–2 million users**.  
 The system emphasizes **security, correctness, and predictable scaling** while remaining cost-effective and manageable by a medium-sized team.  
 
+*check secure_banking_app.png for the architectural diagram*
+
 ---
 
 ## User Login & Access
