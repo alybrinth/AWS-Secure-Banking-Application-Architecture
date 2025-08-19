@@ -1,0 +1,1430 @@
+#make sure to check for functionality, might break something in case.
+AWSTemplateFormatVersion: 2010-09-09
+Description: Medium-Sized Secure Banking App (AWS) – Core infra, security, data, and control-flow plumbing for BFF-led architecture with idempotent payments and immutable audit
+
+Metadata:
+  AWS::CloudFormation::Interface:
+    ParameterGroups:
+      - Label: { default: Environment }
+        Parameters: [Environment, CreateCloudFront, EnableBotControl]
+      - Label: { default: Network }
+        Parameters:
+          - VpcCidr
+          - PublicSubnetCidrA
+          - PublicSubnetCidrB
+          - PublicSubnetCidrC
+          - PrivateSubnetCidrA
+          - PrivateSubnetCidrB
+          - PrivateSubnetCidrC
+          - IsolatedSubnetCidrA
+          - IsolatedSubnetCidrB
+          - IsolatedSubnetCidrC
+          - NATStrategy
+      - Label: { default: Domains (optional) }
+        Parameters: [DomainName, HostedZoneId]
+      - Label: { default: Data Stores }
+        Parameters:
+          - DBName
+          - DBMasterUsername
+          - DBMasterPassword
+          - DBInstanceClass
+          - DBEngineVersion
+          - RedisNodeType
+          - RedisAuthToken
+      - Label: { default: Buckets & Retention }
+        Parameters:
+          - ObjectLockMode
+          - ObjectLockRetentionDays
+      - Label: { default: API & Throttling }
+        Parameters:
+          - ApiRateLimit
+          - ApiBurstLimit
+      - Label: { default: Containers (images and scale) }
+        Parameters:
+          - ContainerImageBffWeb
+          - ContainerImageAccounts
+          - ContainerImagePayments
+          - ContainerImageLedger
+          - ContainerImageWorkerPayments
+          - ContainerImageNotifications
+          - DesiredCountBff
+          - DesiredCountAccounts
+          - DesiredCountPayments
+          - DesiredCountLedger
+          - DesiredCountWorkerPayments
+          - DesiredCountNotifications
+    ParameterLabels:
+      Environment: { default: Environment }
+      CreateCloudFront: { default: Create CloudFront }
+      EnableBotControl: { default: Enable WAF Bot Control }
+      VpcCidr: { default: VPC CIDR }
+      NATStrategy: { default: NAT Gateways }
+      DomainName: { default: Domain Name }
+      HostedZoneId: { default: Route53 Hosted Zone Id }
+      DBName: { default: Aurora DB Name }
+      DBMasterUsername: { default: Aurora Master Username }
+      DBMasterPassword: { default: Aurora Master Password }
+      DBInstanceClass: { default: Aurora Instance Class }
+      DBEngineVersion: { default: Aurora PostgreSQL Engine Version }
+      RedisNodeType: { default: Redis Node Type }
+      RedisAuthToken: { default: Redis Auth Token }
+      ObjectLockMode: { default: S3 Object Lock Mode }
+      ObjectLockRetentionDays: { default: S3 Object Lock Retention (days) }
+      ApiRateLimit: { default: API Rate Limit }
+      ApiBurstLimit: { default: API Burst Limit }
+      ContainerImageBffWeb: { default: BFF Web Image }
+      ContainerImageAccounts: { default: Accounts Image }
+      ContainerImagePayments: { default: Payments Image }
+      ContainerImageLedger: { default: Ledger Image }
+      ContainerImageWorkerPayments: { default: Payments Worker Image }
+      ContainerImageNotifications: { default: Notifications Image }
+      DesiredCountBff: { default: BFF Desired Count }
+      DesiredCountAccounts: { default: Accounts Desired Count }
+      DesiredCountPayments: { default: Payments Desired Count }
+      DesiredCountLedger: { default: Ledger Desired Count }
+      DesiredCountWorkerPayments: { default: Payments Worker Desired Count }
+      DesiredCountNotifications: { default: Notifications Desired Count }
+
+Parameters:
+  Environment:
+    Type: String
+    AllowedValues: [prod, staging, dev]
+    Default: dev
+  CreateCloudFront:
+    Type: String
+    AllowedValues: ['true', 'false']
+    Default: 'true'
+  EnableBotControl:
+    Type: String
+    AllowedValues: ['true', 'false']
+    Default: 'false'
+  VpcCidr:
+    Type: String
+    Default: 10.20.0.0/16
+  PublicSubnetCidrA:
+    Type: String
+    Default: 10.20.0.0/20
+  PublicSubnetCidrB:
+    Type: String
+    Default: 10.20.16.0/20
+  PublicSubnetCidrC:
+    Type: String
+    Default: 10.20.32.0/20
+  PrivateSubnetCidrA:
+    Type: String
+    Default: 10.20.64.0/20
+  PrivateSubnetCidrB:
+    Type: String
+    Default: 10.20.80.0/20
+  PrivateSubnetCidrC:
+    Type: String
+    Default: 10.20.96.0/20
+  IsolatedSubnetCidrA:
+    Type: String
+    Default: 10.20.128.0/20
+  IsolatedSubnetCidrB:
+    Type: String
+    Default: 10.20.144.0/20
+  IsolatedSubnetCidrC:
+    Type: String
+    Default: 10.20.160.0/20
+  NATStrategy:
+    Type: String
+    AllowedValues: [Single, OnePerAZ]
+    Default: Single
+  DomainName:
+    Type: String
+    Default: ''
+  HostedZoneId:
+    Type: String
+    Default: ''
+  DBName:
+    Type: String
+    Default: bankdb
+  DBMasterUsername:
+    Type: String
+    Default: masteruser
+  DBMasterPassword:
+    Type: String
+    NoEcho: true
+    MinLength: 12
+  DBInstanceClass:
+    Type: String
+    Default: db.r6g.large
+  DBEngineVersion:
+    Type: String
+    Default: 15.4
+  RedisNodeType:
+    Type: String
+    Default: cache.r6g.large
+  RedisAuthToken:
+    Type: String
+    NoEcho: true
+    MinLength: 16
+  ObjectLockMode:
+    Type: String
+    AllowedValues: [GOVERNANCE, COMPLIANCE]
+    Default: GOVERNANCE
+  ObjectLockRetentionDays:
+    Type: Number
+    Default: 365
+    MinValue: 1
+  ApiRateLimit:
+    Type: Number
+    Default: 1000
+  ApiBurstLimit:
+    Type: Number
+    Default: 200
+  ContainerImageBffWeb:
+    Type: String
+    Default: public.ecr.aws/amazonlinux/amazonlinux:latest
+  ContainerImageAccounts:
+    Type: String
+    Default: public.ecr.aws/amazonlinux/amazonlinux:latest
+  ContainerImagePayments:
+    Type: String
+    Default: public.ecr.aws/amazonlinux/amazonlinux:latest
+  ContainerImageLedger:
+    Type: String
+    Default: public.ecr.aws/amazonlinux/amazonlinux:latest
+  ContainerImageWorkerPayments:
+    Type: String
+    Default: public.ecr.aws/amazonlinux/amazonlinux:latest
+  ContainerImageNotifications:
+    Type: String
+    Default: public.ecr.aws/amazonlinux/amazonlinux:latest
+  DesiredCountBff:
+    Type: Number
+    Default: 3
+    MinValue: 1
+  DesiredCountAccounts:
+    Type: Number
+    Default: 2
+    MinValue: 1
+  DesiredCountPayments:
+    Type: Number
+    Default: 2
+    MinValue: 1
+  DesiredCountLedger:
+    Type: Number
+    Default: 2
+    MinValue: 1
+  DesiredCountWorkerPayments:
+    Type: Number
+    Default: 2
+    MinValue: 1
+  DesiredCountNotifications:
+    Type: Number
+    Default: 1
+    MinValue: 1
+
+Mappings:
+  EnvLogRetentionDays:
+    prod: { cw: 90 }
+    staging: { cw: 30 }
+    dev: { cw: 14 }
+
+Conditions:
+  UseCloudFront: !Equals [!Ref CreateCloudFront, 'true']
+  UseBotControl: !Equals [!Ref EnableBotControl, 'true']
+  UseDomain: !And [!Not [!Equals [!Ref DomainName, '']], !Not [!Equals [!Ref HostedZoneId, '']]]
+  NATPerAz: !Equals [!Ref NATStrategy, OnePerAZ]
+  NATSingle: !Equals [!Ref NATStrategy, Single]
+
+Resources:
+  AppDataKey:
+    Type: AWS::KMS::Key
+    Properties:
+      Description: App data CMK
+      EnableKeyRotation: true
+      KeyPolicy:
+        Version: '2012-10-17'
+        Statement:
+          - Sid: RootAccess
+            Effect: Allow
+            Principal: { AWS: !Sub arn:${AWS::Partition}:iam::${AWS::AccountId}:root }
+            Action: 'kms:*'
+            Resource: '*'
+  AuditKey:
+    Type: AWS::KMS::Key
+    Properties:
+      Description: Audit and statements CMK
+      EnableKeyRotation: true
+      KeyPolicy:
+        Version: '2012-10-17'
+        Statement:
+          - Sid: RootAccess
+            Effect: Allow
+            Principal: { AWS: !Sub arn:${AWS::Partition}:iam::${AWS::AccountId}:root }
+            Action: 'kms:*'
+            Resource: '*'
+  AppDataKeyAlias:
+    Type: AWS::KMS::Alias
+    Properties:
+      AliasName: alias/app-data
+      TargetKeyId: !Ref AppDataKey
+  AuditKeyAlias:
+    Type: AWS::KMS::Alias
+    Properties:
+      AliasName: alias/audit
+      TargetKeyId: !Ref AuditKey
+
+  Vpc:
+    Type: AWS::EC2::VPC
+    Properties:
+      CidrBlock: !Ref VpcCidr
+      EnableDnsHostnames: true
+      EnableDnsSupport: true
+      Tags: [{ Key: Name, Value: !Sub bank-vpc-${Environment} }]
+
+  InternetGateway:
+    Type: AWS::EC2::InternetGateway
+
+  VpcIgwAttachment:
+    Type: AWS::EC2::VPCGatewayAttachment
+    Properties:
+      VpcId: !Ref Vpc
+      InternetGatewayId: !Ref InternetGateway
+
+  PublicSubnetA:
+    Type: AWS::EC2::Subnet
+    Properties:
+      VpcId: !Ref Vpc
+      CidrBlock: !Ref PublicSubnetCidrA
+      MapPublicIpOnLaunch: true
+      AvailabilityZone: !Select [0, !GetAZs '']
+      Tags: [{ Key: Name, Value: !Sub public-a-${Environment} }]
+  PublicSubnetB:
+    Type: AWS::EC2::Subnet
+    Properties:
+      VpcId: !Ref Vpc
+      CidrBlock: !Ref PublicSubnetCidrB
+      MapPublicIpOnLaunch: true
+      AvailabilityZone: !Select [1, !GetAZs '']
+      Tags: [{ Key: Name, Value: !Sub public-b-${Environment} }]
+  PublicSubnetC:
+    Type: AWS::EC2::Subnet
+    Properties:
+      VpcId: !Ref Vpc
+      CidrBlock: !Ref PublicSubnetCidrC
+      MapPublicIpOnLaunch: true
+      AvailabilityZone: !Select [2, !GetAZs '']
+      Tags: [{ Key: Name, Value: !Sub public-c-${Environment} }]
+
+  PrivateSubnetA:
+    Type: AWS::EC2::Subnet
+    Properties:
+      VpcId: !Ref Vpc
+      CidrBlock: !Ref PrivateSubnetCidrA
+      MapPublicIpOnLaunch: false
+      AvailabilityZone: !Select [0, !GetAZs '']
+      Tags: [{ Key: Name, Value: !Sub private-a-${Environment} }]
+  PrivateSubnetB:
+    Type: AWS::EC2::Subnet
+    Properties:
+      VpcId: !Ref Vpc
+      CidrBlock: !Ref PrivateSubnetCidrB
+      MapPublicIpOnLaunch: false
+      AvailabilityZone: !Select [1, !GetAZs '']
+      Tags: [{ Key: Name, Value: !Sub private-b-${Environment} }]
+  PrivateSubnetC:
+    Type: AWS::EC2::Subnet
+    Properties:
+      VpcId: !Ref Vpc
+      CidrBlock: !Ref PrivateSubnetCidrC
+      MapPublicIpOnLaunch: false
+      AvailabilityZone: !Select [2, !GetAZs '']
+      Tags: [{ Key: Name, Value: !Sub private-c-${Environment} }]
+
+  IsolatedSubnetA:
+    Type: AWS::EC2::Subnet
+    Properties:
+      VpcId: !Ref Vpc
+      CidrBlock: !Ref IsolatedSubnetCidrA
+      MapPublicIpOnLaunch: false
+      AvailabilityZone: !Select [0, !GetAZs '']
+      Tags: [{ Key: Name, Value: !Sub isolated-a-${Environment} }]
+  IsolatedSubnetB:
+    Type: AWS::EC2::Subnet
+    Properties:
+      VpcId: !Ref Vpc
+      CidrBlock: !Ref IsolatedSubnetCidrB
+      MapPublicIpOnLaunch: false
+      AvailabilityZone: !Select [1, !GetAZs '']
+      Tags: [{ Key: Name, Value: !Sub isolated-b-${Environment} }]
+  IsolatedSubnetC:
+    Type: AWS::EC2::Subnet
+    Properties:
+      VpcId: !Ref Vpc
+      CidrBlock: !Ref IsolatedSubnetCidrC
+      MapPublicIpOnLaunch: false
+      AvailabilityZone: !Select [2, !GetAZs '']
+      Tags: [{ Key: Name, Value: !Sub isolated-c-${Environment} }]
+
+  PublicRouteTable:
+    Type: AWS::EC2::RouteTable
+    Properties:
+      VpcId: !Ref Vpc
+  PublicRoute:
+    Type: AWS::EC2::Route
+    Properties:
+      RouteTableId: !Ref PublicRouteTable
+      DestinationCidrBlock: 0.0.0.0/0
+      GatewayId: !Ref InternetGateway
+  PublicSubnetARouteTableAssociation:
+    Type: AWS::EC2::SubnetRouteTableAssociation
+    Properties:
+      SubnetId: !Ref PublicSubnetA
+      RouteTableId: !Ref PublicRouteTable
+  PublicSubnetBRouteTableAssociation:
+    Type: AWS::EC2::SubnetRouteTableAssociation
+    Properties:
+      SubnetId: !Ref PublicSubnetB
+      RouteTableId: !Ref PublicRouteTable
+  PublicSubnetCRouteTableAssociation:
+    Type: AWS::EC2::SubnetRouteTableAssociation
+    Properties:
+      SubnetId: !Ref PublicSubnetC
+      RouteTableId: !Ref PublicRouteTable
+
+  NatEipA:
+    Condition: NATPerAz
+    Type: AWS::EC2::EIP
+    Properties:
+      Domain: vpc
+  NatEipB:
+    Condition: NATPerAz
+    Type: AWS::EC2::EIP
+    Properties:
+      Domain: vpc
+  NatEipC:
+    Condition: NATPerAz
+    Type: AWS::EC2::EIP
+    Properties:
+      Domain: vpc
+  NatEipSingle:
+    Condition: NATSingle
+    Type: AWS::EC2::EIP
+    Properties:
+      Domain: vpc
+
+  NatGwA:
+    Type: AWS::EC2::NatGateway
+    Condition: NATPerAz
+    Properties:
+      AllocationId: !GetAtt NatEipA.AllocationId
+      SubnetId: !Ref PublicSubnetA
+  NatGwB:
+    Type: AWS::EC2::NatGateway
+    Condition: NATPerAz
+    Properties:
+      AllocationId: !GetAtt NatEipB.AllocationId
+      SubnetId: !Ref PublicSubnetB
+  NatGwC:
+    Type: AWS::EC2::NatGateway
+    Condition: NATPerAz
+    Properties:
+      AllocationId: !GetAtt NatEipC.AllocationId
+      SubnetId: !Ref PublicSubnetC
+  NatGwSingle:
+    Type: AWS::EC2::NatGateway
+    Condition: NATSingle
+    Properties:
+      AllocationId: !GetAtt NatEipSingle.AllocationId
+      SubnetId: !Ref PublicSubnetA
+
+  PrivateRouteTableA:
+    Type: AWS::EC2::RouteTable
+    Properties: { VpcId: !Ref Vpc }
+  PrivateRouteTableB:
+    Type: AWS::EC2::RouteTable
+    Properties: { VpcId: !Ref Vpc }
+  PrivateRouteTableC:
+    Type: AWS::EC2::RouteTable
+    Properties: { VpcId: !Ref Vpc }
+
+  PrivateRouteA:
+    Type: AWS::EC2::Route
+    Properties:
+      RouteTableId: !Ref PrivateRouteTableA
+      DestinationCidrBlock: 0.0.0.0/0
+      NatGatewayId: !If [NATPerAz, !Ref NatGwA, !Ref NatGwSingle]
+  PrivateRouteB:
+    Type: AWS::EC2::Route
+    Properties:
+      RouteTableId: !Ref PrivateRouteTableB
+      DestinationCidrBlock: 0.0.0.0/0
+      NatGatewayId: !If [NATPerAz, !Ref NatGwB, !Ref NatGwSingle]
+  PrivateRouteC:
+    Type: AWS::EC2::Route
+    Properties:
+      RouteTableId: !Ref PrivateRouteTableC
+      DestinationCidrBlock: 0.0.0.0/0
+      NatGatewayId: !If [NATPerAz, !Ref NatGwC, !Ref NatGwSingle]
+
+  PrivateSubnetARouteTableAssociation:
+    Type: AWS::EC2::SubnetRouteTableAssociation
+    Properties: { SubnetId: !Ref PrivateSubnetA, RouteTableId: !Ref PrivateRouteTableA }
+  PrivateSubnetBRouteTableAssociation:
+    Type: AWS::EC2::SubnetRouteTableAssociation
+    Properties: { SubnetId: !Ref PrivateSubnetB, RouteTableId: !Ref PrivateRouteTableB }
+  PrivateSubnetCRouteTableAssociation:
+    Type: AWS::EC2::SubnetRouteTableAssociation
+    Properties: { SubnetId: !Ref PrivateSubnetC, RouteTableId: !Ref PrivateRouteTableC }
+
+  S3Endpoint:
+    Type: AWS::EC2::VPCEndpoint
+    Properties:
+      VpcId: !Ref Vpc
+      ServiceName: !Sub com.amazonaws.${AWS::Region}.s3
+      VpcEndpointType: Gateway
+      RouteTableIds:
+        - !Ref PrivateRouteTableA
+        - !Ref PrivateRouteTableB
+        - !Ref PrivateRouteTableC
+  DdbEndpoint:
+    Type: AWS::EC2::VPCEndpoint
+    Properties:
+      VpcId: !Ref Vpc
+      ServiceName: !Sub com.amazonaws.${AWS::Region}.dynamodb
+      VpcEndpointType: Gateway
+      RouteTableIds:
+        - !Ref PrivateRouteTableA
+        - !Ref PrivateRouteTableB
+        - !Ref PrivateRouteTableC
+  InterfaceEndpointSQS:
+    Type: AWS::EC2::VPCEndpoint
+    Properties:
+      VpcId: !Ref Vpc
+      ServiceName: !Sub com.amazonaws.${AWS::Region}.sqs
+      VpcEndpointType: Interface
+      SubnetIds: [!Ref PrivateSubnetA, !Ref PrivateSubnetB, !Ref PrivateSubnetC]
+      SecurityGroupIds: []
+  InterfaceEndpointSNS:
+    Type: AWS::EC2::VPCEndpoint
+    Properties:
+      VpcId: !Ref Vpc
+      ServiceName: !Sub com.amazonaws.${AWS::Region}.sns
+      VpcEndpointType: Interface
+      SubnetIds: [!Ref PrivateSubnetA, !Ref PrivateSubnetB, !Ref PrivateSubnetC]
+      SecurityGroupIds: []
+  InterfaceEndpointKMS:
+    Type: AWS::EC2::VPCEndpoint
+    Properties:
+      VpcId: !Ref Vpc
+      ServiceName: !Sub com.amazonaws.${AWS::Region}.kms
+      VpcEndpointType: Interface
+      SubnetIds: [!Ref PrivateSubnetA, !Ref PrivateSubnetB, !Ref PrivateSubnetC]
+      SecurityGroupIds: []
+  InterfaceEndpointSecrets:
+    Type: AWS::EC2::VPCEndpoint
+    Properties:
+      VpcId: !Ref Vpc
+      ServiceName: !Sub com.amazonaws.${AWS::Region}.secretsmanager
+      VpcEndpointType: Interface
+      SubnetIds: [!Ref PrivateSubnetA, !Ref PrivateSubnetB, !Ref PrivateSubnetC]
+      SecurityGroupIds: []
+  InterfaceEndpointLogs:
+    Type: AWS::EC2::VPCEndpoint
+    Properties:
+      VpcId: !Ref Vpc
+      ServiceName: !Sub com.amazonaws.${AWS::Region}.logs
+      VpcEndpointType: Interface
+      SubnetIds: [!Ref PrivateSubnetA, !Ref PrivateSubnetB, !Ref PrivateSubnetC]
+      SecurityGroupIds: []
+
+  DBSubnetGroup:
+    Type: AWS::RDS::DBSubnetGroup
+    Properties:
+      DBSubnetGroupDescription: db subnets
+      SubnetIds: [!Ref IsolatedSubnetA, !Ref IsolatedSubnetB, !Ref IsolatedSubnetC]
+
+  DBSecurityGroup:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      GroupDescription: rds sg
+      VpcId: !Ref Vpc
+
+  RedisSecurityGroup:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      GroupDescription: redis sg
+      VpcId: !Ref Vpc
+
+  EcsServiceSecurityGroup:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      GroupDescription: ecs services sg
+      VpcId: !Ref Vpc
+
+  AllowEcsToDb:
+    Type: AWS::EC2::SecurityGroupIngress
+    Properties:
+      GroupId: !Ref DBSecurityGroup
+      IpProtocol: tcp
+      FromPort: 5432
+      ToPort: 5432
+      SourceSecurityGroupId: !Ref EcsServiceSecurityGroup
+  AllowEcsToRedis:
+    Type: AWS::EC2::SecurityGroupIngress
+    Properties:
+      GroupId: !Ref RedisSecurityGroup
+      IpProtocol: tcp
+      FromPort: 6379
+      ToPort: 6379
+      SourceSecurityGroupId: !Ref EcsServiceSecurityGroup
+
+  AuroraCluster:
+    Type: AWS::RDS::DBCluster
+    Properties:
+      Engine: aurora-postgresql
+      EngineVersion: !Ref DBEngineVersion
+      DatabaseName: !Ref DBName
+      MasterUsername: !Ref DBMasterUsername
+      MasterUserPassword: !Ref DBMasterPassword
+      DBSubnetGroupName: !Ref DBSubnetGroup
+      StorageEncrypted: true
+      KmsKeyId: !Ref AppDataKey
+      VpcSecurityGroupIds: [!Ref DBSecurityGroup]
+      BackupRetentionPeriod: 7
+      DeletionProtection: true
+
+  AuroraWriter:
+    Type: AWS::RDS::DBInstance
+    Properties:
+      DBClusterIdentifier: !Ref AuroraCluster
+      DBInstanceClass: !Ref DBInstanceClass
+      Engine: aurora-postgresql
+
+  AuroraReader:
+    Type: AWS::RDS::DBInstance
+    Properties:
+      DBClusterIdentifier: !Ref AuroraCluster
+      DBInstanceClass: !Ref DBInstanceClass
+      Engine: aurora-postgresql
+
+  RedisSubnetGroup:
+    Type: AWS::ElastiCache::SubnetGroup
+    Properties:
+      Description: redis subnets
+      SubnetIds: [!Ref IsolatedSubnetA, !Ref IsolatedSubnetB, !Ref IsolatedSubnetC]
+
+  RedisReplicationGroup:
+    Type: AWS::ElastiCache::ReplicationGroup
+    Properties:
+      ReplicationGroupDescription: bank redis
+      Engine: redis
+      CacheNodeType: !Ref RedisNodeType
+      NumNodeGroups: 1
+      ReplicasPerNodeGroup: 1
+      TransitEncryptionEnabled: true
+      AtRestEncryptionEnabled: true
+      AuthToken: !Ref RedisAuthToken
+      AutomaticFailoverEnabled: true
+      MultiAZEnabled: true
+      SecurityGroupIds: [!Ref RedisSecurityGroup]
+      CacheSubnetGroupName: !Ref RedisSubnetGroup
+
+  AuditBucket:
+    Type: AWS::S3::Bucket
+    Properties:
+      BucketName: !Sub bank-audit-${Environment}-${AWS::AccountId}-${AWS::Region}
+      BucketEncryption:
+        ServerSideEncryptionConfiguration:
+          - ServerSideEncryptionByDefault:
+              SSEAlgorithm: aws:kms
+              KMSMasterKeyID: !Ref AuditKey
+      VersioningConfiguration: { Status: Enabled }
+      ObjectLockEnabled: true
+      ObjectLockConfiguration:
+        ObjectLockEnabled: Enabled
+        Rule:
+          DefaultRetention:
+            Mode: !Ref ObjectLockMode
+            Days: !Ref ObjectLockRetentionDays
+      PublicAccessBlockConfiguration:
+        BlockPublicAcls: true
+        BlockPublicPolicy: true
+        IgnorePublicAcls: true
+        RestrictPublicBuckets: true
+
+  StatementsBucket:
+    Type: AWS::S3::Bucket
+    Properties:
+      BucketName: !Sub bank-statements-${Environment}-${AWS::AccountId}-${AWS::Region}
+      BucketEncryption:
+        ServerSideEncryptionConfiguration:
+          - ServerSideEncryptionByDefault:
+              SSEAlgorithm: aws:kms
+              KMSMasterKeyID: !Ref AuditKey
+      VersioningConfiguration: { Status: Enabled }
+      ObjectLockEnabled: true
+      ObjectLockConfiguration:
+        ObjectLockEnabled: Enabled
+        Rule:
+          DefaultRetention:
+            Mode: !Ref ObjectLockMode
+            Days: !Ref ObjectLockRetentionDays
+      PublicAccessBlockConfiguration:
+        BlockPublicAcls: true
+        BlockPublicPolicy: true
+        IgnorePublicAcls: true
+        RestrictPublicBuckets: true
+
+  UploadsBucket:
+    Type: AWS::S3::Bucket
+    Properties:
+      BucketName: !Sub bank-uploads-${Environment}-${AWS::AccountId}-${AWS::Region}
+      BucketEncryption:
+        ServerSideEncryptionConfiguration:
+          - ServerSideEncryptionByDefault:
+              SSEAlgorithm: aws:kms
+              KMSMasterKeyID: !Ref AppDataKey
+      VersioningConfiguration: { Status: Enabled }
+      PublicAccessBlockConfiguration:
+        BlockPublicAcls: true
+        BlockPublicPolicy: true
+        IgnorePublicAcls: true
+        RestrictPublicBuckets: true
+
+  DdbTableIdempotency:
+    Type: AWS::DynamoDB::Table
+    Properties:
+      BillingMode: PAY_PER_REQUEST
+      SSESpecification:
+        SSEEnabled: true
+        KMSMasterKeyId: !Ref AppDataKey
+        SSEType: KMS
+      AttributeDefinitions:
+        - AttributeName: pk
+          AttributeType: S
+      KeySchema:
+        - AttributeName: pk
+          KeyType: HASH
+      TableName: !Sub bank-idempotency-${Environment}
+      TimeToLiveSpecification:
+        AttributeName: ttl
+        Enabled: true
+
+  DdbTableOutbox:
+    Type: AWS::DynamoDB::Table
+    Properties:
+      BillingMode: PAY_PER_REQUEST
+      SSESpecification:
+        SSEEnabled: true
+        KMSMasterKeyId: !Ref AppDataKey
+        SSEType: KMS
+      AttributeDefinitions:
+        - AttributeName: pk
+          AttributeType: S
+      KeySchema:
+        - AttributeName: pk
+          KeyType: HASH
+      StreamSpecification:
+        StreamViewType: NEW_IMAGE
+      TableName: !Sub bank-outbox-${Environment}
+
+  PaymentsInitDLQ:
+    Type: AWS::SQS::Queue
+    Properties:
+      FifoQueue: true
+      QueueName: !Sub payments-init-dlq-${Environment}.fifo
+      KmsMasterKeyId: !Ref AppDataKey
+
+  PaymentsInitQueue:
+    Type: AWS::SQS::Queue
+    Properties:
+      FifoQueue: true
+      ContentBasedDeduplication: false
+      QueueName: !Sub payments-init-${Environment}.fifo
+      KmsMasterKeyId: !Ref AppDataKey
+      RedrivePolicy:
+        deadLetterTargetArn: !GetAtt PaymentsInitDLQ.Arn
+        maxReceiveCount: 5
+
+  LedgerPostedDLQ:
+    Type: AWS::SQS::Queue
+    Properties:
+      FifoQueue: true
+      QueueName: !Sub ledger-posted-dlq-${Environment}.fifo
+      KmsMasterKeyId: !Ref AppDataKey
+
+  LedgerPostedQueue:
+    Type: AWS::SQS::Queue
+    Properties:
+      FifoQueue: true
+      ContentBasedDeduplication: false
+      QueueName: !Sub ledger-posted-${Environment}.fifo
+      KmsMasterKeyId: !Ref AppDataKey
+      RedrivePolicy:
+        deadLetterTargetArn: !GetAtt LedgerPostedDLQ.Arn
+        maxReceiveCount: 5
+
+  EventsTopic:
+    Type: AWS::SNS::Topic
+    Properties:
+      TopicName: !Sub bank-events-${Environment}
+      KmsMasterKeyId: !Ref AppDataKey
+
+  MonthlyStatementsRule:
+    Type: AWS::Events::Rule
+    Properties:
+      Name: !Sub monthly-statements-${Environment}
+      ScheduleExpression: cron(0 0 1 * ? *)
+      State: ENABLED
+      Targets: []
+
+  UserPool:
+    Type: AWS::Cognito::UserPool
+    Properties:
+      UserPoolName: !Sub bank-users-${Environment}
+      MfaConfiguration: ON
+      Policies:
+        PasswordPolicy:
+          MinimumLength: 12
+          RequireLowercase: true
+          RequireNumbers: true
+          RequireSymbols: true
+          RequireUppercase: true
+
+  UserPoolClient:
+    Type: AWS::Cognito::UserPoolClient
+    Properties:
+      UserPoolId: !Ref UserPool
+      ClientName: !Sub bank-app-client-${Environment}
+      GenerateSecret: false
+      PreventUserExistenceErrors: ENABLED
+
+  HttpApiRest:
+    Type: AWS::ApiGateway::RestApi
+    Properties:
+      Name: !Sub bank-api-${Environment}
+      EndpointConfiguration: { Types: [REGIONAL] }
+
+  ApiResourceApi:
+    Type: AWS::ApiGateway::Resource
+    Properties:
+      ParentId: !GetAtt HttpApiRest.RootResourceId
+      PathPart: api
+      RestApiId: !Ref HttpApiRest
+
+  ApiResourceProxy:
+    Type: AWS::ApiGateway::Resource
+    Properties:
+      ParentId: !Ref ApiResourceApi
+      PathPart: '{proxy+}'
+      RestApiId: !Ref HttpApiRest
+
+  ApiVpcLink:
+    Type: AWS::ApiGateway::VpcLink
+    Properties:
+      Name: !Sub bank-vpclink-${Environment}
+      TargetArns: [!Ref BffNlb]
+
+  ApiAuthorizer:
+    Type: AWS::ApiGateway::Authorizer
+    Properties:
+      Name: !Sub bank-cognito-auth-${Environment}
+      RestApiId: !Ref HttpApiRest
+      Type: COGNITO_USER_POOLS
+      ProviderARNs: [!GetAtt UserPool.Arn]
+      IdentitySource: method.request.header.Authorization
+
+  ApiMethodAnyProxy:
+    Type: AWS::ApiGateway::Method
+    Properties:
+      RestApiId: !Ref HttpApiRest
+      ResourceId: !Ref ApiResourceProxy
+      HttpMethod: ANY
+      AuthorizationType: COGNITO_USER_POOLS
+      AuthorizerId: !Ref ApiAuthorizer
+      RequestParameters:
+        method.request.path.proxy: true
+      Integration:
+        Type: HTTP_PROXY
+        IntegrationHttpMethod: ANY
+        Uri: !Sub http://${BffNlb.DNSName}/{proxy}
+        ConnectionType: VPC_LINK
+        ConnectionId: !Ref ApiVpcLink
+        RequestParameters:
+          integration.request.path.proxy: method.request.path.proxy
+
+  ApiDeployment:
+    Type: AWS::ApiGateway::Deployment
+    Properties:
+      RestApiId: !Ref HttpApiRest
+    DependsOn: [ApiMethodAnyProxy]
+
+  ApiStage:
+    Type: AWS::ApiGateway::Stage
+    Properties:
+      RestApiId: !Ref HttpApiRest
+      StageName: prod
+      DeploymentId: !Ref ApiDeployment
+      MethodSettings:
+        - ResourcePath: /*
+          HttpMethod: '*'
+          ThrottlingBurstLimit: !Ref ApiBurstLimit
+          ThrottlingRateLimit: !Ref ApiRateLimit
+
+  WafRegional:
+    Type: AWS::WAFv2::WebACL
+    Condition: UseCloudFront
+    Properties:
+      DefaultAction: { Allow: {} }
+      Scope: CLOUDFRONT
+      Name: !Sub bank-waf-cf-${Environment}
+      VisibilityConfig: { CloudWatchMetricsEnabled: true, MetricName: !Sub wafcf-${Environment}, SampledRequestsEnabled: true }
+      Rules:
+        - Name: AWS-AWSManagedRulesCommonRuleSet
+          Priority: 1
+          OverrideAction: { None: {} }
+          Statement:
+            ManagedRuleGroupStatement:
+              Name: AWSManagedRulesCommonRuleSet
+              VendorName: AWS
+          VisibilityConfig: { CloudWatchMetricsEnabled: true, MetricName: common, SampledRequestsEnabled: true }
+        - Name: AWS-AWSManagedRulesKnownBadInputsRuleSet
+          Priority: 2
+          OverrideAction: { None: {} }
+          Statement:
+            ManagedRuleGroupStatement:
+              Name: AWSManagedRulesKnownBadInputsRuleSet
+              VendorName: AWS
+          VisibilityConfig: { CloudWatchMetricsEnabled: true, MetricName: badinputs, SampledRequestsEnabled: true }
+        - Name: AWS-AWSManagedRulesBotControlRuleSet
+          Priority: 3
+          Statement:
+            ManagedRuleGroupStatement:
+              Name: AWSManagedRulesBotControlRuleSet
+              VendorName: AWS
+          VisibilityConfig: { CloudWatchMetricsEnabled: true, MetricName: bot, SampledRequestsEnabled: true }
+          OverrideAction: { None: {} }
+
+  WafRegionalApi:
+    Type: AWS::WAFv2::WebACL
+    Condition: !Not [!Equals [!Ref CreateCloudFront, 'true']]
+    Properties:
+      DefaultAction: { Allow: {} }
+      Scope: REGIONAL
+      Name: !Sub bank-waf-api-${Environment}
+      VisibilityConfig: { CloudWatchMetricsEnabled: true, MetricName: !Sub wafapi-${Environment}, SampledRequestsEnabled: true }
+      Rules:
+        - Name: AWS-AWSManagedRulesCommonRuleSet
+          Priority: 1
+          OverrideAction: { None: {} }
+          Statement:
+            ManagedRuleGroupStatement:
+              Name: AWSManagedRulesCommonRuleSet
+              VendorName: AWS
+          VisibilityConfig: { CloudWatchMetricsEnabled: true, MetricName: common, SampledRequestsEnabled: true }
+
+  WafAssociationApi:
+    Type: AWS::WAFv2::WebACLAssociation
+    Condition: !Not [!Equals [!Ref CreateCloudFront, 'true']]
+    Properties:
+      ResourceArn: !Sub arn:${AWS::Partition}:apigateway:${AWS::Region}::/restapis/${HttpApiRest}/stages/${ApiStage}
+      WebACLArn: !GetAtt WafRegionalApi.Arn
+
+  CloudFrontDistribution:
+    Type: AWS::CloudFront::Distribution
+    Condition: UseCloudFront
+    Properties:
+      DistributionConfig:
+        Enabled: true
+        DefaultCacheBehavior:
+          AllowedMethods: [GET, HEAD, OPTIONS, PUT, POST, PATCH, DELETE]
+          TargetOriginId: api-origin
+          ViewerProtocolPolicy: https-only
+          CachedMethods: [GET, HEAD]
+          ForwardedValues:
+            QueryString: true
+            Headers: ['Authorization']
+        Origins:
+          - DomainName: !Sub '${HttpApiRest}.execute-api.${AWS::Region}.amazonaws.com'
+            Id: api-origin
+            OriginPath: /prod
+            CustomOriginConfig:
+              HTTPPort: 80
+              HTTPSPort: 443
+              OriginProtocolPolicy: https-only
+        WebACLId: !GetAtt WafRegional.Arn
+
+  DnsRecordCloudFront:
+    Type: AWS::Route53::RecordSet
+    Condition: UseDomain
+    Properties:
+      HostedZoneId: !Ref HostedZoneId
+      Name: !Ref DomainName
+      Type: A
+      AliasTarget:
+        DNSName: !GetAtt CloudFrontDistribution.DomainName
+        HostedZoneId: Z2FDTNDATAQYW2
+
+  EcsCluster:
+    Type: AWS::ECS::Cluster
+    Properties:
+      ClusterName: !Sub bank-ecs-${Environment}
+
+  ServiceNamespace:
+    Type: AWS::ServiceDiscovery::PrivateDnsNamespace
+    Properties:
+      Name: svc.local
+      Vpc: !Ref Vpc
+      Description: service discovery
+
+  BffLogGroup:
+    Type: AWS::Logs::LogGroup
+    Properties:
+      LogGroupName: !Sub /aws/ecs/bff-${Environment}
+      RetentionInDays: !FindInMap [EnvLogRetentionDays, !Ref Environment, cw]
+
+  AccountsLogGroup:
+    Type: AWS::Logs::LogGroup
+    Properties:
+      LogGroupName: !Sub /aws/ecs/accounts-${Environment}
+      RetentionInDays: !FindInMap [EnvLogRetentionDays, !Ref Environment, cw]
+
+  PaymentsLogGroup:
+    Type: AWS::Logs::LogGroup
+    Properties:
+      LogGroupName: !Sub /aws/ecs/payments-${Environment}
+      RetentionInDays: !FindInMap [EnvLogRetentionDays, !Ref Environment, cw]
+
+  LedgerLogGroup:
+    Type: AWS::Logs::LogGroup
+    Properties:
+      LogGroupName: !Sub /aws/ecs/ledger-${Environment}
+      RetentionInDays: !FindInMap [EnvLogRetentionDays, !Ref Environment, cw]
+
+  WorkerPaymentsLogGroup:
+    Type: AWS::Logs::LogGroup
+    Properties:
+      LogGroupName: !Sub /aws/ecs/worker-payments-${Environment}
+      RetentionInDays: !FindInMap [EnvLogRetentionDays, !Ref Environment, cw]
+
+  NotificationsLogGroup:
+    Type: AWS::Logs::LogGroup
+    Properties:
+      LogGroupName: !Sub /aws/ecs/notifications-${Environment}
+      RetentionInDays: !FindInMap [EnvLogRetentionDays, !Ref Environment, cw]
+
+  TaskExecutionRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal: { Service: ecs-tasks.amazonaws.com }
+            Action: sts:AssumeRole
+      ManagedPolicyArns:
+        - arn:aws:iam::aws:policy/service-role/AmazonECSTaskExecutionRolePolicy
+
+  TaskRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal: { Service: ecs-tasks.amazonaws.com }
+            Action: sts:AssumeRole
+      Policies:
+        - PolicyName: app-policy
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action:
+                  - dynamodb:PutItem
+                  - dynamodb:GetItem
+                  - dynamodb:UpdateItem
+                  - dynamodb:DescribeTable
+                  - dynamodb:Query
+                  - dynamodb:Scan
+                Resource:
+                  - !GetAtt DdbTableIdempotency.Arn
+                  - !GetAtt DdbTableOutbox.Arn
+              - Effect: Allow
+                Action:
+                  - sqs:SendMessage
+                  - sqs:ReceiveMessage
+                  - sqs:ChangeMessageVisibility
+                  - sqs:DeleteMessage
+                  - sqs:GetQueueAttributes
+                Resource:
+                  - !GetAtt PaymentsInitQueue.Arn
+                  - !GetAtt PaymentsInitDLQ.Arn
+                  - !GetAtt LedgerPostedQueue.Arn
+                  - !GetAtt LedgerPostedDLQ.Arn
+              - Effect: Allow
+                Action:
+                  - sns:Publish
+                Resource: !Ref EventsTopic
+              - Effect: Allow
+                Action:
+                  - s3:PutObject
+                  - s3:GetObject
+                  - s3:ListBucket
+                Resource:
+                  - !Sub arn:${AWS::Partition}:s3:::${StatementsBucket}
+                  - !Sub arn:${AWS::Partition}:s3:::${StatementsBucket}/*
+                  - !Sub arn:${AWS::Partition}:s3:::${UploadsBucket}
+                  - !Sub arn:${AWS::Partition}:s3:::${UploadsBucket}/*
+              - Effect: Allow
+                Action:
+                  - kms:Decrypt
+                  - kms:Encrypt
+                  - kms:GenerateDataKey
+                Resource:
+                  - !GetAtt AppDataKey.Arn
+                  - !GetAtt AuditKey.Arn
+
+  BffTask:
+    Type: AWS::ECS::TaskDefinition
+    Properties:
+      Family: !Sub bff-${Environment}
+      Cpu: '512'
+      Memory: '1024'
+      NetworkMode: awsvpc
+      RequiresCompatibilities: [FARGATE]
+      ExecutionRoleArn: !GetAtt TaskExecutionRole.Arn
+      TaskRoleArn: !GetAtt TaskRole.Arn
+      ContainerDefinitions:
+        - Name: bff
+          Image: !Ref ContainerImageBffWeb
+          PortMappings: [{ ContainerPort: 8080 }]
+          LogConfiguration:
+            LogDriver: awslogs
+            Options:
+              awslogs-group: !Ref BffLogGroup
+              awslogs-region: !Ref AWS::Region
+              awslogs-stream-prefix: ecs
+
+  AccountsTask:
+    Type: AWS::ECS::TaskDefinition
+    Properties:
+      Family: !Sub accounts-${Environment}
+      Cpu: '512'
+      Memory: '1024'
+      NetworkMode: awsvpc
+      RequiresCompatibilities: [FARGATE]
+      ExecutionRoleArn: !GetAtt TaskExecutionRole.Arn
+      TaskRoleArn: !GetAtt TaskRole.Arn
+      ContainerDefinitions:
+        - Name: accounts
+          Image: !Ref ContainerImageAccounts
+          PortMappings: [{ ContainerPort: 8080 }]
+          Environment:
+            - Name: AURORA_ENDPOINT
+              Value: !GetAtt AuroraCluster.Endpoint.Address
+          LogConfiguration:
+            LogDriver: awslogs
+            Options:
+              awslogs-group: !Ref AccountsLogGroup
+              awslogs-region: !Ref AWS::Region
+              awslogs-stream-prefix: ecs
+
+  PaymentsTask:
+    Type: AWS::ECS::TaskDefinition
+    Properties:
+      Family: !Sub payments-${Environment}
+      Cpu: '512'
+      Memory: '1024'
+      NetworkMode: awsvpc
+      RequiresCompatibilities: [FARGATE]
+      ExecutionRoleArn: !GetAtt TaskExecutionRole.Arn
+      TaskRoleArn: !GetAtt TaskRole.Arn
+      ContainerDefinitions:
+        - Name: payments
+          Image: !Ref ContainerImagePayments
+          PortMappings: [{ ContainerPort: 8080 }]
+          Environment:
+            - Name: PAYMENTS_INIT_QUEUE_URL
+              Value: !Ref PaymentsInitQueue
+            - Name: IDEMPOTENCY_TABLE
+              Value: !Ref DdbTableIdempotency
+          LogConfiguration:
+            LogDriver: awslogs
+            Options:
+              awslogs-group: !Ref PaymentsLogGroup
+              awslogs-region: !Ref AWS::Region
+              awslogs-stream-prefix: ecs
+
+  LedgerTask:
+    Type: AWS::ECS::TaskDefinition
+    Properties:
+      Family: !Sub ledger-${Environment}
+      Cpu: '512'
+      Memory: '1024'
+      NetworkMode: awsvpc
+      RequiresCompatibilities: [FARGATE]
+      ExecutionRoleArn: !GetAtt TaskExecutionRole.Arn
+      TaskRoleArn: !GetAtt TaskRole.Arn
+      ContainerDefinitions:
+        - Name: ledger
+          Image: !Ref ContainerImageLedger
+          PortMappings: [{ ContainerPort: 8080 }]
+          Environment:
+            - Name: AURORA_ENDPOINT
+              Value: !GetAtt AuroraCluster.Endpoint.Address
+          LogConfiguration:
+            LogDriver: awslogs
+            Options:
+              awslogs-group: !Ref LedgerLogGroup
+              awslogs-region: !Ref AWS::Region
+              awslogs-stream-prefix: ecs
+
+  WorkerPaymentsTask:
+    Type: AWS::ECS::TaskDefinition
+    Properties:
+      Family: !Sub worker-payments-${Environment}
+      Cpu: '512'
+      Memory: '1024'
+      NetworkMode: awsvpc
+      RequiresCompatibilities: [FARGATE]
+      ExecutionRoleArn: !GetAtt TaskExecutionRole.Arn
+      TaskRoleArn: !GetAtt TaskRole.Arn
+      ContainerDefinitions:
+        - Name: worker-payments
+          Image: !Ref ContainerImageWorkerPayments
+          Environment:
+            - Name: PAYMENTS_INIT_QUEUE_URL
+              Value: !Ref PaymentsInitQueue
+            - Name: LEDGER_POSTED_QUEUE_URL
+              Value: !Ref LedgerPostedQueue
+            - Name: LEDGER_ENDPOINT
+              Value: !Sub http://ledger.svc.local:8080
+          LogConfiguration:
+            LogDriver: awslogs
+            Options:
+              awslogs-group: !Ref WorkerPaymentsLogGroup
+              awslogs-region: !Ref AWS::Region
+              awslogs-stream-prefix: ecs
+
+  NotificationsTask:
+    Type: AWS::ECS::TaskDefinition
+    Properties:
+      Family: !Sub notifications-${Environment}
+      Cpu: '256'
+      Memory: '512'
+      NetworkMode: awsvpc
+      RequiresCompatibilities: [FARGATE]
+      ExecutionRoleArn: !GetAtt TaskExecutionRole.Arn
+      TaskRoleArn: !GetAtt TaskRole.Arn
+      ContainerDefinitions:
+        - Name: notifications
+          Image: !Ref ContainerImageNotifications
+          Environment:
+            - Name: EVENTS_TOPIC_ARN
+              Value: !Ref EventsTopic
+          LogConfiguration:
+            LogDriver: awslogs
+            Options:
+              awslogs-group: !Ref NotificationsLogGroup
+              awslogs-region: !Ref AWS::Region
+              awslogs-stream-prefix: ecs
+
+  BffNlb:
+    Type: AWS::ElasticLoadBalancingV2::LoadBalancer
+    Properties:
+      Name: !Sub bff-nlb-${Environment}
+      Scheme: internal
+      Type: network
+      Subnets: [!Ref PrivateSubnetA, !Ref PrivateSubnetB]
+
+  BffNlbListener:
+    Type: AWS::ElasticLoadBalancingV2::Listener
+    Properties:
+      LoadBalancerArn: !Ref BffNlb
+      Port: 80
+      Protocol: TCP
+      DefaultActions:
+        - Type: Forward
+          TargetGroupArn: !Ref BffTargetGroup
+
+  BffTargetGroup:
+    Type: AWS::ElasticLoadBalancingV2::TargetGroup
+    Properties:
+      Name: !Sub bff-tg-${Environment}
+      Port: 8080
+      Protocol: TCP
+      TargetType: ip
+      VpcId: !Ref Vpc
+      HealthCheckProtocol: HTTP
+      HealthCheckPort: traffic-port
+      HealthCheckPath: /health
+      HealthyThresholdCount: 2
+      UnhealthyThresholdCount: 3
+      Matcher: { HttpCode: '200-399' }
+
+  BffService:
+    Type: AWS::ECS::Service
+    DependsOn: BffNlbListener
+    Properties:
+      Cluster: !Ref EcsCluster
+      DesiredCount: !Ref DesiredCountBff
+      LaunchType: FARGATE
+      NetworkConfiguration:
+        AwsvpcConfiguration:
+          AssignPublicIp: DISABLED
+          SecurityGroups: [!Ref EcsServiceSecurityGroup]
+          Subnets: [!Ref PrivateSubnetA, !Ref PrivateSubnetB, !Ref PrivateSubnetC]
+      ServiceRegistries:
+        - RegistryArn: !GetAtt BffDiscoveryService.Arn
+      TaskDefinition: !Ref BffTask
+      LoadBalancers:
+        - ContainerName: bff
+          ContainerPort: 8080
+          TargetGroupArn: !Ref BffTargetGroup
+
+  BffDiscoveryService:
+    Type: AWS::ServiceDiscovery::Service
+    Properties:
+      Name: bff
+      NamespaceId: !Ref ServiceNamespace
+      DnsConfig:
+        DnsRecords:
+          - TTL: 5
+            Type: A
+
+  AccountsService:
+    Type: AWS::ECS::Service
+    Properties:
+      Cluster: !Ref EcsCluster
+      DesiredCount: !Ref DesiredCountAccounts
+      LaunchType: FARGATE
+      NetworkConfiguration:
+        AwsvpcConfiguration:
+          AssignPublicIp: DISABLED
+          SecurityGroups: [!Ref EcsServiceSecurityGroup]
+          Subnets: [!Ref PrivateSubnetA, !Ref PrivateSubnetB, !Ref PrivateSubnetC]
+      ServiceRegistries:
+        - RegistryArn: !GetAtt AccountsDiscoveryService.Arn
+      TaskDefinition: !Ref AccountsTask
+
+  AccountsDiscoveryService:
+    Type: AWS::ServiceDiscovery::Service
+    Properties:
+      Name: accounts
+      NamespaceId: !Ref ServiceNamespace
+      DnsConfig:
+        DnsRecords:
+          - TTL: 5
+            Type: A
+
+  PaymentsService:
+    Type: AWS::ECS::Service
+    Properties:
+      Cluster: !Ref EcsCluster
+      DesiredCount: !Ref DesiredCountPayments
+      LaunchType: FARGATE
+      NetworkConfiguration:
+        AwsvpcConfiguration:
+          AssignPublicIp: DISABLED
+          SecurityGroups: [!Ref EcsServiceSecurityGroup]
+          Subnets: [!Ref PrivateSubnetA, !Ref PrivateSubnetB, !Ref PrivateSubnetC]
+      ServiceRegistries:
+        - RegistryArn: !GetAtt PaymentsDiscoveryService.Arn
+      TaskDefinition: !Ref PaymentsTask
+
+  PaymentsDiscoveryService:
+    Type: AWS::ServiceDiscovery::Service
+    Properties:
+      Name: payments
+      NamespaceId: !Ref ServiceNamespace
+      DnsConfig:
+        DnsRecords:
+          - TTL: 5
+            Type: A
+
+  LedgerService:
+    Type: AWS::ECS::Service
+    Properties:
+      Cluster: !Ref EcsCluster
+      DesiredCount: !Ref DesiredCountLedger
+      LaunchType: FARGATE
+      NetworkConfiguration:
+        AwsvpcConfiguration:
+          AssignPublicIp: DISABLED
+          SecurityGroups: [!Ref EcsServiceSecurityGroup]
+          Subnets: [!Ref PrivateSubnetA, !Ref PrivateSubnetB, !Ref PrivateSubnetC]
+      ServiceRegistries:
+        - RegistryArn: !GetAtt LedgerDiscoveryService.Arn
+      TaskDefinition: !Ref LedgerTask
+
+  LedgerDiscoveryService:
+    Type: AWS::ServiceDiscovery::Service
+    Properties:
+      Name: ledger
+      NamespaceId: !Ref ServiceNamespace
+      DnsConfig:
+        DnsRecords:
+          - TTL: 5
+            Type: A
+
+  WorkerPaymentsService:
+    Type: AWS::ECS::Service
+    Properties:
+      Cluster: !Ref EcsCluster
+      DesiredCount: !Ref DesiredCountWorkerPayments
+      LaunchType: FARGATE
+      NetworkConfiguration:
+        AwsvpcConfiguration:
+          AssignPublicIp: DISABLED
+          SecurityGroups: [!Ref EcsServiceSecurityGroup]
+          Subnets: [!Ref PrivateSubnetA, !Ref PrivateSubnetB, !Ref PrivateSubnetC]
+      TaskDefinition: !Ref WorkerPaymentsTask
+
+  NotificationsService:
+    Type: AWS::ECS::Service
+    Properties:
+      Cluster: !Ref EcsCluster
+      DesiredCount: !Ref DesiredCountNotifications
+      LaunchType: FARGATE
+      NetworkConfiguration:
+        AwsvpcConfiguration:
+          AssignPublicIp: DISABLED
+          SecurityGroups: [!Ref EcsServiceSecurityGroup]
+          Subnets: [!Ref PrivateSubnetA, !Ref PrivateSubnetB, !Ref PrivateSubnetC]
+      ServiceRegistries:
+        - RegistryArn: !GetAtt NotificationsDiscoveryService.Arn
+      TaskDefinition: !Ref NotificationsTask
+
+  NotificationsDiscoveryService:
+    Type: AWS::ServiceDiscovery::Service
+    Properties:
+      Name: notifications
+      NamespaceId: !Ref ServiceNamespace
+      DnsConfig:
+        DnsRecords:
+          - TTL: 5
+            Type: A
+
+Outputs:
+  VpcId:
+    Value: !Ref Vpc
+  ApiInvokeUrl:
+    Value: !Sub https://${HttpApiRest}.execute-api.${AWS::Region}.amazonaws.com/prod
+  CloudFrontDomainName:
+    Condition: UseCloudFront
+    Value: !GetAtt CloudFrontDistribution.DomainName
+  CognitoUserPoolId:
+    Value: !Ref UserPool
+  PaymentsInitQueueUrl:
+    Value: !Ref PaymentsInitQueue
+  LedgerPostedQueueUrl:
+    Value: !Ref LedgerPostedQueue
+  EventsTopicArn:
+    Value: !Ref EventsTopic
+  AuditBucketName:
+    Value: !Ref AuditBucket
+  StatementsBucketName:
+    Value: !Ref StatementsBucket
+  UploadsBucketName:
+    Value: !Ref UploadsBucket
+  AuroraEndpoint:
+    Value: !GetAtt AuroraCluster.Endpoint.Address
+  RedisPrimaryEndpoint:
+    Value: !GetAtt RedisReplicationGroup.PrimaryEndPoint.Address
